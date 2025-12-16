@@ -116,7 +116,7 @@ func run() error {
 	}
 
 	// Save last snapshot cache
-	snapshotID := resp.SnapshotID
+	snapshotID := resp.SnapshotID.String()
 	if snapshotID == "" {
 		snapshotID = sessionData.PreSnapshotID
 	}

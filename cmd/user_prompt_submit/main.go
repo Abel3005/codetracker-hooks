@@ -119,11 +119,12 @@ func run() error {
 
 	resp, err := client.CreateSnapshot(req)
 	if err != nil {
+		os.WriteFile("/tmp/codetracker-error.log", []byte(err.Error()), 0644)
 		return err
 	}
 
 	// Save last snapshot cache
-	if err := cache.SaveLastSnapshot(config.LastSnapshotFile(), currentFiles, resp.SnapshotID); err != nil {
+	if err := cache.SaveLastSnapshot(config.LastSnapshotFile(), currentFiles, resp.SnapshotID.String()); err != nil {
 		return err
 	}
 
@@ -134,7 +135,7 @@ func run() error {
 	}
 
 	sessionData := &session.SessionData{
-		PreSnapshotID:   resp.SnapshotID,
+		PreSnapshotID:   resp.SnapshotID.String(),
 		Prompt:          input.Prompt,
 		ClaudeSessionID: input.SessionID,
 		StartedAt:       timestamp,

@@ -6,10 +6,43 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"codetracker-hooks/internal/diff"
 )
+
+// FlexibleID handles both string and number JSON values
+type FlexibleID string
+
+func (f *FlexibleID) UnmarshalJSON(data []byte) error {
+	// Try string first
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		*f = FlexibleID(s)
+		return nil
+	}
+
+	// Try number
+	var n json.Number
+	if err := json.Unmarshal(data, &n); err == nil {
+		*f = FlexibleID(n.String())
+		return nil
+	}
+
+	// Try int directly
+	var i int64
+	if err := json.Unmarshal(data, &i); err == nil {
+		*f = FlexibleID(strconv.FormatInt(i, 10))
+		return nil
+	}
+
+	return fmt.Errorf("cannot unmarshal %s into FlexibleID", string(data))
+}
+
+func (f FlexibleID) String() string {
+	return string(f)
+}
 
 // Client is the HTTP client for CodeTracker API
 type Client struct {
@@ -77,8 +110,8 @@ type CreateSnapshotRequest struct {
 
 // CreateSnapshotResponse is the response from creating a snapshot
 type CreateSnapshotResponse struct {
-	SnapshotID string `json:"snapshot_id"`
-	CreatedAt  string `json:"created_at"`
+	SnapshotID FlexibleID `json:"snapshot_id"`
+	CreatedAt  string     `json:"created_at"`
 }
 
 // CreateSnapshot creates a new snapshot
@@ -109,7 +142,7 @@ type CreateInteractionRequest struct {
 
 // CreateInteractionResponse is the response from creating an interaction
 type CreateInteractionResponse struct {
-	SnapshotID string `json:"snapshot_id"`
+	SnapshotID FlexibleID `json:"snapshot_id"`
 }
 
 // CreateInteraction creates a new interaction record
