@@ -1,0 +1,118 @@
+@startuml CodeTracker Hooks - Client Server Sequence
+
+title CodeTracker Hooks: Client-Server Communication Sequence
+
+skinparam backgroundColor #FEFEFE
+skinparam sequenceMessageAlign center
+skinparam responseMessageBelowArrow true
+
+actor User
+participant "Claude Code" as Claude
+participant "user_prompt_submit\n(Pre-Prompt Hook)" as PreHook
+participant "stop\n(Post-Prompt Hook)" as PostHook
+database "Local Cache\n(last_snapshot.json)" as Cache
+participant "CodeTracker\nServer" as Server
+database "Server DB" as DB
+
+== 1. User Prompt Input ==
+
+User -> Claude: Enter prompt
+activate Claude
+
+Claude -> PreHook: Execute hook\n{prompt, session_id, timestamp,\ntranscript_path}
+activate PreHook
+
+PreHook -> Cache: Load previous snapshot\n(files)
+Cache --> PreHook: {files}
+
+PreHook -> PreHook: Scan files and\ncalculate changes
+
+== 1.1 Record Current Transcript State ==
+
+alt transcript_path exists AND tracking enabled
+    PreHook -> PreHook: Count transcript lines
+    PreHook -> PreHook: Save line count\nfor stop hook
+end
+
+== 1.2 Create Pre-Prompt Snapshot ==
+
+PreHook -> Server: POST /api/snapshots\n{project_hash, message, changes}
+activate Server
+Server -> DB: Save snapshot
+DB --> Server: snapshot_id
+Server --> PreHook: {snapshot_id, created_at}
+deactivate Server
+
+PreHook -> Cache: Save cache\n{files, line_count}
+
+PreHook -> Cache: Save session data\n{pre_snapshot_id, prompt,\nclaude_session_id, started_at}
+
+PreHook --> Claude: Success (exit 0)
+deactivate PreHook
+
+== 2. Claude Response Generation ==
+
+Claude -> Claude: Generate AI response\nModify files, etc.
+note right: New conversation entries\nadded to transcript file
+
+== 3. Claude Response Complete ==
+
+Claude -> PostHook: Execute hook\n{timestamp, transcript_path}
+activate PostHook
+
+PostHook -> Cache: Load session data
+Cache --> PostHook: {pre_snapshot_id, prompt,\nclaude_session_id, started_at}
+
+PostHook -> Cache: Load previous snapshot
+Cache --> PostHook: {files, line_count}
+
+PostHook -> PostHook: Scan files and\ncalculate changes
+
+== 3.1 Send New Conversation Entries ==
+
+alt transcript_path exists AND tracking enabled
+    PostHook -> PostHook: Read entries from\nline_count to current end
+
+    alt New entries exist
+        PostHook -> Server: POST /api/conversations\n{project_hash, session_id, entries}
+        activate Server
+        Server -> DB: Save entries with\nsequential IDs
+        DB --> Server: start_id, end_id
+        Server --> PostHook: {success, entries_stored,\nstart_id, end_id}
+        deactivate Server
+    end
+end
+
+== 3.2 Create Post-Prompt Interaction ==
+
+PostHook -> Server: POST /api/interactions\n{project_hash, message, changes,\nparent_snapshot_id,\nconversation_start_id, conversation_end_id}
+activate Server
+Server -> DB: Save interaction\nwith conversation reference
+DB --> Server: snapshot_id
+Server --> PostHook: {snapshot_id}
+deactivate Server
+
+PostHook -> Cache: Save cache\n{files, new_line_count}
+
+PostHook -> Cache: Delete session data
+
+PostHook --> Claude: Success (exit 0)
+deactivate PostHook
+
+Claude --> User: Display response
+deactivate Claude
+
+== Data Model ==
+
+note over User, DB
+**Conversation Storage:**
+- conversations table: id (SERIAL), session_id, entry_type, entry_data
+- interactions table: conversation_start_id, conversation_end_id
+
+**Query conversation for interaction:**
+SELECT * FROM conversations
+WHERE id BETWEEN start_id AND end_id
+ORDER BY id
+end note
+
+@enduml

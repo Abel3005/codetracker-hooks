@@ -131,13 +131,15 @@ func (c *Client) CreateSnapshot(req *CreateSnapshotRequest) (*CreateSnapshotResp
 
 // CreateInteractionRequest is the request body for creating an interaction
 type CreateInteractionRequest struct {
-	ProjectHash      string         `json:"project_hash"`
-	Message          string         `json:"message"`
-	Changes          []*diff.Change `json:"changes"`
-	ParentSnapshotID string         `json:"parent_snapshot_id"`
-	ClaudeSessionID  string         `json:"claude_session_id"`
-	StartedAt        string         `json:"started_at"`
-	EndedAt          string         `json:"ended_at"`
+	ProjectHash         string         `json:"project_hash"`
+	Message             string         `json:"message"`
+	Changes             []*diff.Change `json:"changes"`
+	ParentSnapshotID    string         `json:"parent_snapshot_id"`
+	ClaudeSessionID     string         `json:"claude_session_id"`
+	StartedAt           string         `json:"started_at"`
+	EndedAt             string         `json:"ended_at"`
+	ConversationStartID *int64         `json:"conversation_start_id,omitempty"`
+	ConversationEndID   *int64         `json:"conversation_end_id,omitempty"`
 }
 
 // CreateInteractionResponse is the response from creating an interaction
@@ -153,6 +155,56 @@ func (c *Client) CreateInteraction(req *CreateInteractionRequest) (*CreateIntera
 	}
 
 	var resp CreateInteractionResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, err
+	}
+
+	return &resp, nil
+}
+
+// ConversationEntry represents a single conversation entry
+type ConversationEntry struct {
+	Type string                 `json:"type,omitempty"`
+	Data map[string]interface{} `json:"-"` // Will be flattened
+}
+
+// MarshalJSON flattens ConversationEntry by merging Data fields
+func (e ConversationEntry) MarshalJSON() ([]byte, error) {
+	result := make(map[string]interface{})
+	if e.Type != "" {
+		result["type"] = e.Type
+	}
+	for k, v := range e.Data {
+		if k != "type" {
+			result[k] = v
+		}
+	}
+	return json.Marshal(result)
+}
+
+// SendConversationsRequest is the request body for sending conversation entries
+type SendConversationsRequest struct {
+	ProjectHash string              `json:"project_hash"`
+	SessionID   string              `json:"session_id"`
+	Entries     []ConversationEntry `json:"entries"`
+}
+
+// SendConversationsResponse is the response from sending conversations
+type SendConversationsResponse struct {
+	Success       bool  `json:"success"`
+	EntriesStored int   `json:"entries_stored"`
+	StartID       int64 `json:"start_id"`
+	EndID         int64 `json:"end_id"`
+}
+
+// SendConversations sends conversation entries to the server
+func (c *Client) SendConversations(req *SendConversationsRequest) (*SendConversationsResponse, error) {
+	respBody, err := c.doRequest("POST", "/api/conversations", req)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp SendConversationsResponse
 	if err := json.Unmarshal(respBody, &resp); err != nil {
 		return nil, err
 	}

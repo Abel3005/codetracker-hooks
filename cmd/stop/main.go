@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"codetracker-hooks/internal/api"
@@ -16,7 +18,13 @@ import (
 
 // HookInput represents the input from Claude Code
 type HookInput struct {
-	Timestamp string `json:"timestamp"`
+	Timestamp      string `json:"timestamp"`
+	TranscriptPath string `json:"transcript_path"`
+}
+
+// TranscriptEntry represents a parsed entry from the transcript JSONL file
+type TranscriptEntry struct {
+	Data map[string]interface{}
 }
 
 func main() {
@@ -32,6 +40,50 @@ func main() {
 		// Silent fail
 		return
 	}
+}
+
+// readTranscriptEntries reads entries from a JSONL transcript file starting from startLine
+func readTranscriptEntries(transcriptPath string, startLine, maxEntries int) []TranscriptEntry {
+	if transcriptPath == "" {
+		return nil
+	}
+
+	file, err := os.Open(transcriptPath)
+	if err != nil {
+		return nil
+	}
+	defer file.Close()
+
+	var entries []TranscriptEntry
+	sc := bufio.NewScanner(file)
+	buf := make([]byte, 0, 64*1024)
+	sc.Buffer(buf, 10*1024*1024) // 10MB max line size
+
+	lineIndex := 0
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			lineIndex++
+			continue
+		}
+
+		if lineIndex >= startLine {
+			var data map[string]interface{}
+			if err := json.Unmarshal([]byte(line), &data); err != nil {
+				lineIndex++
+				continue
+			}
+			entries = append(entries, TranscriptEntry{
+				Data: data,
+			})
+			if len(entries) >= maxEntries {
+				break
+			}
+		}
+		lineIndex++
+	}
+
+	return entries
 }
 
 func run() error {
@@ -82,10 +134,12 @@ func run() error {
 	}
 
 	// Load previous snapshot
-	var prevFiles map[string]*diff.SnapshotFileInfo
 	lastSnapshot, _ := cache.LoadLastSnapshot(config.LastSnapshotFile())
+	var prevFiles map[string]*diff.SnapshotFileInfo
+	var prevTranscript *cache.TranscriptState
 	if lastSnapshot != nil {
 		prevFiles = lastSnapshot.Files
+		prevTranscript = lastSnapshot.Transcript
 	}
 
 	changes := diff.CalculateChanges(currentFiles, prevFiles)
@@ -97,17 +151,72 @@ func run() error {
 		return nil
 	}
 
-	// Create interaction on server
+	// Create API client
 	client := api.NewClient(cfg.ServerURL, creds.APIKey)
 
+	// Handle conversation tracking: send new entries since user_prompt_submit
+	var transcriptState *cache.TranscriptState
+	var lastLineCount int
+	var conversationStartID, conversationEndID *int64
+
+	if input.TranscriptPath != "" && cfg.ConversationTracking.Enabled {
+		maxEntries := cfg.ConversationTracking.MaxEntriesPerRequest
+		startLine := 0
+
+		if prevTranscript != nil && prevTranscript.SessionID == sessionData.ClaudeSessionID {
+			startLine = prevTranscript.LastLineCount
+		}
+
+		// Read new transcript entries since user_prompt_submit
+		entries := readTranscriptEntries(input.TranscriptPath, startLine, maxEntries)
+
+		if len(entries) > 0 {
+			// Convert to API format
+			apiEntries := make([]api.ConversationEntry, len(entries))
+			for i, e := range entries {
+				entryType := ""
+				if t, ok := e.Data["type"].(string); ok {
+					entryType = t
+				}
+				apiEntries[i] = api.ConversationEntry{
+					Type: entryType,
+					Data: e.Data,
+				}
+			}
+
+			convReq := &api.SendConversationsRequest{
+				ProjectHash: creds.CurrentProjectHash,
+				SessionID:   sessionData.ClaudeSessionID,
+				Entries:     apiEntries,
+			}
+
+			convResp, err := client.SendConversations(convReq)
+			if err == nil && convResp != nil {
+				conversationStartID = &convResp.StartID
+				conversationEndID = &convResp.EndID
+			}
+			lastLineCount = startLine + len(entries)
+		} else if prevTranscript != nil {
+			lastLineCount = prevTranscript.LastLineCount
+		}
+
+		transcriptState = &cache.TranscriptState{
+			SessionID:     sessionData.ClaudeSessionID,
+			LastLineCount: lastLineCount,
+		}
+	}
+
+	// Create interaction on server
 	req := &api.CreateInteractionRequest{
-		ProjectHash:      creds.CurrentProjectHash,
-		Message:          "[AUTO-POST] " + sessionData.Prompt,
-		Changes:          changes,
-		ParentSnapshotID: sessionData.PreSnapshotID,
-		ClaudeSessionID:  sessionData.ClaudeSessionID,
-		StartedAt:        sessionData.StartedAt,
-		EndedAt:          timestamp,
+		ProjectHash:         creds.CurrentProjectHash,
+		Message:             "[AUTO-POST] " + sessionData.Prompt,
+		Changes:             changes,
+		ParentSnapshotID:    sessionData.PreSnapshotID,
+		ClaudeSessionID:     sessionData.ClaudeSessionID,
+		StartedAt:           sessionData.StartedAt,
+		EndedAt:             timestamp,
+		ConversationStartID: conversationStartID,
+		ConversationEndID:   conversationEndID,
 	}
 
 	resp, err := client.CreateInteraction(req)
@@ -115,12 +224,14 @@ func run() error {
 		return err
 	}
 
-	// Save last snapshot cache
+	// Prepare snapshot ID
 	snapshotID := resp.SnapshotID.String()
 	if snapshotID == "" {
 		snapshotID = sessionData.PreSnapshotID
 	}
-	if err := cache.SaveLastSnapshot(config.LastSnapshotFile(), currentFiles, snapshotID); err != nil {
+
+	// Save last snapshot cache with transcript state
+	if err := cache.SaveLastSnapshotWithTranscript(config.LastSnapshotFile(), currentFiles, snapshotID, transcriptState); err != nil {
 		return err
 	}
 

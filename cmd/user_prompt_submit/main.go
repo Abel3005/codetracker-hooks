@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"io"
 	"os"
@@ -18,10 +19,12 @@ import (
 
 // HookInput represents the input from Claude Code
 type HookInput struct {
-	Prompt    string `json:"prompt"`
-	SessionID string `json:"session_id"`
-	Timestamp string `json:"timestamp"`
+	Prompt         string `json:"prompt"`
+	SessionID      string `json:"session_id"`
+	Timestamp      string `json:"timestamp"`
+	TranscriptPath string `json:"transcript_path"`
 }
+
 
 func main() {
 	// Always exit with success to never block Claude
@@ -36,6 +39,33 @@ func main() {
 		// Silent fail
 		return
 	}
+}
+
+// countTranscriptLines counts non-empty lines in a JSONL transcript file
+func countTranscriptLines(transcriptPath string) int {
+	if transcriptPath == "" {
+		return 0
+	}
+
+	file, err := os.Open(transcriptPath)
+	if err != nil {
+		return 0
+	}
+	defer file.Close()
+
+	count := 0
+	sc := bufio.NewScanner(file)
+	buf := make([]byte, 0, 64*1024)
+	sc.Buffer(buf, 10*1024*1024) // 10MB max line size
+
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line != "" {
+			count++
+		}
+	}
+
+	return count
 }
 
 func run() error {
@@ -95,17 +125,28 @@ func run() error {
 	}
 
 	// Load previous snapshot
-	var prevFiles map[string]*diff.SnapshotFileInfo
 	lastSnapshot, _ := cache.LoadLastSnapshot(config.LastSnapshotFile())
+	var prevFiles map[string]*diff.SnapshotFileInfo
 	if lastSnapshot != nil {
 		prevFiles = lastSnapshot.Files
 	}
 
 	changes := diff.CalculateChanges(currentFiles, prevFiles)
 
-	// Create snapshot on server
+	// Create API client
 	client := api.NewClient(cfg.ServerURL, creds.APIKey)
 
+	// Record current transcript line count for stop hook
+	var transcriptState *cache.TranscriptState
+	if input.TranscriptPath != "" && cfg.ConversationTracking.Enabled {
+		lineCount := countTranscriptLines(input.TranscriptPath)
+		transcriptState = &cache.TranscriptState{
+			SessionID:     input.SessionID,
+			LastLineCount: lineCount,
+		}
+	}
+
+	// Create snapshot on server
 	req := &api.CreateSnapshotRequest{
 		ProjectHash:     creds.CurrentProjectHash,
 		Message:         "[AUTO-PRE] " + input.Prompt,
@@ -123,8 +164,8 @@ func run() error {
 		return err
 	}
 
-	// Save last snapshot cache
-	if err := cache.SaveLastSnapshot(config.LastSnapshotFile(), currentFiles, resp.SnapshotID.String()); err != nil {
+	// Save last snapshot cache with updated transcript state
+	if err := cache.SaveLastSnapshotWithTranscript(config.LastSnapshotFile(), currentFiles, resp.SnapshotID.String(), transcriptState); err != nil {
 		return err
 	}
 

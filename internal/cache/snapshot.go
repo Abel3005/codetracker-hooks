@@ -9,10 +9,17 @@ import (
 	"codetracker-hooks/internal/scanner"
 )
 
+// TranscriptState holds the state of transcript synchronization
+type TranscriptState struct {
+	SessionID     string `json:"session_id"`
+	LastLineCount int    `json:"last_line_count"`
+}
+
 // CachedSnapshot holds the last snapshot state
 type CachedSnapshot struct {
-	SnapshotID string                          `json:"snapshot_id,omitempty"`
+	SnapshotID string                            `json:"snapshot_id,omitempty"`
 	Files      map[string]*diff.SnapshotFileInfo `json:"files"`
+	Transcript *TranscriptState                  `json:"transcript,omitempty"`
 }
 
 // LoadLastSnapshot loads the last snapshot from cache file
@@ -37,6 +44,11 @@ func LoadLastSnapshot(cacheFile string) (*CachedSnapshot, error) {
 
 // SaveLastSnapshot saves the current file state to cache
 func SaveLastSnapshot(cacheFile string, files map[string]*scanner.FileInfo, snapshotID string) error {
+	return SaveLastSnapshotWithTranscript(cacheFile, files, snapshotID, nil)
+}
+
+// SaveLastSnapshotWithTranscript saves the current file state and transcript state to cache
+func SaveLastSnapshotWithTranscript(cacheFile string, files map[string]*scanner.FileInfo, snapshotID string, transcript *TranscriptState) error {
 	// Ensure directory exists
 	dir := filepath.Dir(cacheFile)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -55,6 +67,7 @@ func SaveLastSnapshot(cacheFile string, files map[string]*scanner.FileInfo, snap
 	snapshot := &CachedSnapshot{
 		SnapshotID: snapshotID,
 		Files:      snapshotFiles,
+		Transcript: transcript,
 	}
 
 	jsonData, err := json.MarshalIndent(snapshot, "", "  ")
