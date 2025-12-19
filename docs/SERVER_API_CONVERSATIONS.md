@@ -10,15 +10,36 @@ Each prompt-response pair is sent as a unit, with sequential integer IDs for eas
 ### Simple Conversation Storage
 
 - Each interaction (prompt-response) sends only the new conversation entries
+- Entries are **filtered** to contain only essential text (user/assistant messages)
 - Server assigns sequential integer IDs to each entry
 - Interactions reference conversation range via `conversation_start_id` and `conversation_end_id`
 - Previous context is tracked via code change history (snapshot chain)
 
 ```
 Session abc:
-  Conversation ID 1-5:  Interaction 1 entries
-  Conversation ID 6-12: Interaction 2 entries
+  Conversation ID 1-2:  Interaction 1 (user + assistant)
+  Conversation ID 3-4:  Interaction 2 (user + assistant)
   ...
+```
+
+---
+
+## Entry Filtering (Client-side)
+
+Before sending, the client filters transcript entries:
+
+| Entry Type | Action |
+|------------|--------|
+| `user` | Extract text strings from `message.content` array |
+| `assistant` | Extract `text` field from items where `type='text'` |
+| Other types | **Ignored** (tool_use, tool_result, etc.) |
+
+**Filtered format:**
+```json
+{
+  "entry_type": "user" | "assistant",
+  "entry_data": "extracted text content"
+}
 ```
 
 ---
@@ -44,14 +65,12 @@ X-API-Key: {api_key}
   "session_id": "claude_session_id",
   "entries": [
     {
-      "type": "user",
-      "message": { "role": "user", "content": "..." },
-      "timestamp": "2024-01-15T10:30:00.000Z"
+      "entry_type": "user",
+      "entry_data": "How do I implement a binary search?"
     },
     {
-      "type": "assistant",
-      "message": { "role": "assistant", "content": "..." },
-      "timestamp": "2024-01-15T10:30:05.000Z"
+      "entry_type": "assistant",
+      "entry_data": "Here's how to implement binary search in Go..."
     }
   ]
 }
@@ -61,7 +80,9 @@ X-API-Key: {api_key}
 |-------|------|----------|-------------|
 | `project_hash` | string | O | Project identification hash |
 | `session_id` | string | O | Claude Code session ID |
-| `entries` | array | O | Conversation entry array |
+| `entries` | array | O | Filtered conversation entries |
+| `entries[].entry_type` | string | O | `"user"` or `"assistant"` |
+| `entries[].entry_data` | string | O | Text content |
 
 #### Response
 
@@ -118,7 +139,7 @@ Creates an interaction record (prompt-response pair) with conversation reference
   "started_at": "...",
   "ended_at": "...",
   "conversation_start_id": 1,
-  "conversation_end_id": 5
+  "conversation_end_id": 2
 }
 ```
 
@@ -138,8 +159,8 @@ CREATE TABLE conversations (
     id SERIAL PRIMARY KEY,  -- Sequential integer ID
     project_id INTEGER NOT NULL REFERENCES projects(id),
     session_id VARCHAR(255) NOT NULL,
-    entry_type VARCHAR(50),
-    entry_data JSONB NOT NULL,
+    entry_type VARCHAR(20) NOT NULL,  -- 'user' or 'assistant'
+    entry_data TEXT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -171,8 +192,9 @@ ORDER BY c.id;
 
 1. **user_prompt_submit**: Record current transcript line count
 2. **stop**: Read entries from recorded line count to current end
-3. **Send conversations**: POST entries to `/api/conversations`, receive `start_id` and `end_id`
-4. **Create interaction**: POST to `/api/interactions` with `conversation_start_id` and `conversation_end_id`
+3. **Filter**: Extract only user/assistant text content
+4. **Send conversations**: POST filtered entries to `/api/conversations`, receive `start_id` and `end_id`
+5. **Create interaction**: POST to `/api/interactions` with `conversation_start_id` and `conversation_end_id`
 
 ---
 
@@ -187,8 +209,8 @@ curl -X POST http://localhost:5000/api/conversations \
     "project_hash": "test_project_hash",
     "session_id": "test_session_123",
     "entries": [
-      {"type": "user", "message": {"content": "Hello"}},
-      {"type": "assistant", "message": {"content": "Hi!"}}
+      {"entry_type": "user", "entry_data": "Hello, how are you?"},
+      {"entry_type": "assistant", "entry_data": "I am doing well, thank you!"}
     ]
   }'
 

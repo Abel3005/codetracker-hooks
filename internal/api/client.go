@@ -162,24 +162,10 @@ func (c *Client) CreateInteraction(req *CreateInteractionRequest) (*CreateIntera
 	return &resp, nil
 }
 
-// ConversationEntry represents a single conversation entry
+// ConversationEntry represents a filtered conversation entry
 type ConversationEntry struct {
-	Type string                 `json:"type,omitempty"`
-	Data map[string]interface{} `json:"-"` // Will be flattened
-}
-
-// MarshalJSON flattens ConversationEntry by merging Data fields
-func (e ConversationEntry) MarshalJSON() ([]byte, error) {
-	result := make(map[string]interface{})
-	if e.Type != "" {
-		result["type"] = e.Type
-	}
-	for k, v := range e.Data {
-		if k != "type" {
-			result[k] = v
-		}
-	}
-	return json.Marshal(result)
+	EntryType string `json:"entry_type"`
+	EntryData string `json:"entry_data"`
 }
 
 // SendConversationsRequest is the request body for sending conversation entries

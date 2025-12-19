@@ -54,6 +54,12 @@ func (s *Scanner) shouldIgnorePath(absPath string) bool {
 		return true
 	}
 	basename := filepath.Base(absPath)
+
+	// Always ignore dotfiles and dotdirs (starting with .)
+	if strings.HasPrefix(basename, ".") {
+		return true
+	}
+
 	return s.ignoreMatcher.ShouldIgnore(relativePath, basename)
 }
 

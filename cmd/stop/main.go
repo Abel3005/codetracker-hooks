@@ -86,6 +86,74 @@ func readTranscriptEntries(transcriptPath string, startLine, maxEntries int) []T
 	return entries
 }
 
+// FilteredEntry represents a filtered conversation entry
+type FilteredEntry struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// filterEntryData extracts core text from entry data
+// Returns filtered entry or nil if no text content
+func filterEntryData(entryType string, entryData map[string]interface{}) *FilteredEntry {
+	// Only process user and assistant types
+	if entryType != "user" && entryType != "assistant" {
+		return nil
+	}
+
+	message, ok := entryData["message"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	content, ok := message["content"]
+	if !ok {
+		return nil
+	}
+
+	var text string
+
+	if entryType == "user" {
+		// For user: join string items from content array
+		if contentArr, ok := content.([]interface{}); ok {
+			var texts []string
+			for _, item := range contentArr {
+				if str, ok := item.(string); ok {
+					texts = append(texts, str)
+				}
+			}
+			text = strings.Join(texts, "")
+		} else if str, ok := content.(string); ok {
+			// Handle case where content is a plain string
+			text = str
+		}
+	} else if entryType == "assistant" {
+		// For assistant: extract text from type='text' items
+		if contentArr, ok := content.([]interface{}); ok {
+			var texts []string
+			for _, item := range contentArr {
+				if itemMap, ok := item.(map[string]interface{}); ok {
+					if itemMap["type"] == "text" {
+						if textVal, ok := itemMap["text"].(string); ok {
+							texts = append(texts, textVal)
+						}
+					}
+				}
+			}
+			text = strings.Join(texts, "\n")
+		}
+	}
+
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+
+	return &FilteredEntry{
+		Role:    entryType,
+		Content: text,
+	}
+}
+
 func run() error {
 	// Read input from stdin
 	inputData, err := io.ReadAll(os.Stdin)
@@ -171,29 +239,57 @@ func run() error {
 		entries := readTranscriptEntries(input.TranscriptPath, startLine, maxEntries)
 
 		if len(entries) > 0 {
-			// Convert to API format
-			apiEntries := make([]api.ConversationEntry, len(entries))
-			for i, e := range entries {
+			// Debug: log all entry types found
+			typeCount := make(map[string]int)
+			for _, e := range entries {
+				t := "unknown"
+				if typ, ok := e.Data["type"].(string); ok {
+					t = typ
+				}
+				typeCount[t]++
+			}
+			debugData, _ := json.MarshalIndent(map[string]interface{}{
+				"total_entries": len(entries),
+				"types":         typeCount,
+				"first_entry":   entries[0].Data,
+			}, "", "  ")
+			os.WriteFile("/tmp/codetracker-transcript-debug.json", debugData, 0644)
+
+			// Filter and convert to API format
+			var apiEntries []api.ConversationEntry
+			for _, e := range entries {
 				entryType := ""
 				if t, ok := e.Data["type"].(string); ok {
 					entryType = t
 				}
-				apiEntries[i] = api.ConversationEntry{
-					Type: entryType,
-					Data: e.Data,
+
+				// Apply filter - only keep user/assistant with text content
+				filtered := filterEntryData(entryType, e.Data)
+				if filtered != nil {
+					apiEntries = append(apiEntries, api.ConversationEntry{
+						EntryType: filtered.Role,
+						EntryData: filtered.Content,
+					})
 				}
 			}
 
-			convReq := &api.SendConversationsRequest{
-				ProjectHash: creds.CurrentProjectHash,
-				SessionID:   sessionData.ClaudeSessionID,
-				Entries:     apiEntries,
-			}
+			// Only send if we have filtered entries
+			if len(apiEntries) > 0 {
+				convReq := &api.SendConversationsRequest{
+					ProjectHash: creds.CurrentProjectHash,
+					SessionID:   sessionData.ClaudeSessionID,
+					Entries:     apiEntries,
+				}
 
-			convResp, err := client.SendConversations(convReq)
-			if err == nil && convResp != nil {
-				conversationStartID = &convResp.StartID
-				conversationEndID = &convResp.EndID
+				// Debug: log what we're sending
+				reqDebug, _ := json.MarshalIndent(convReq, "", "  ")
+				os.WriteFile("/tmp/codetracker-conv-request.json", reqDebug, 0644)
+
+				convResp, err := client.SendConversations(convReq)
+				if err == nil && convResp != nil {
+					conversationStartID = &convResp.StartID
+					conversationEndID = &convResp.EndID
+				}
 			}
 			lastLineCount = startLine + len(entries)
 		} else if prevTranscript != nil {
